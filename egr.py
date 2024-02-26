@@ -60,8 +60,10 @@ def get_name_company(unp):
                             unp}. Waiting before retrying.""")
             time.sleep(60)  # Подождать одну минуту перед повторным запросом
             return get_name_company(unp)  # Повторить запрос
-        if response.status_code == 204:
+        elif response.status_code == 204:
             return None
+        elif response.status_code in {500, 501, 502, 503, 504}:
+            logging.error(f"Server problems for {unp}: {e} ")
         response.raise_for_status()
         json_data = response.json()
         return json_data
@@ -127,26 +129,26 @@ def create_table():
 def format_data(data: dict):
     try:
         name_info = data['Name'][0].get(
-            'vn', data['Name'][0].get('vnaim', 'N/A'))
-        unp_info = data['Name'][0].get('ngrn', 'N/A')
+            'vn', data['Name'][0].get('vnaim', ''))
+        unp_info = data['Name'][0].get('ngrn', '')
         activity_info = data.get('Activity', [{}])[0].get(
-            'nsi00114', {}).get('vnvdnp', 'N/A')
+            'nsi00114', {}).get('vnvdnp', '')
 
-        email = data['Info'][0].get('vemail', 'N/A')
+        email = data['Info'][0].get('vemail', '')
 
         phone_string = data['Info'][0].get('vtels', '')
         phone_numbers = [number.strip() for number in phone_string.split(
-            ',')] if phone_string else ['N/A', 'N/A']
-        telefon1 = phone_numbers[0] if phone_numbers else 'N/A'
-        telefon2 = phone_numbers[1] if len(phone_numbers) > 1 else 'N/A'
+            ',')] if phone_string else ['', '']
+        telefon1 = phone_numbers[0] if phone_numbers else ''
+        telefon2 = phone_numbers[1] if len(phone_numbers) > 1 else ''
 
-        post_index = data['Info'][0].get('nindex', 'N/A')
-        city = data['Info'][0].get('vnp', 'N/A')
-        vulitsa = data['Info'][0].get('vulitsa', 'N/A')
-        vdom = data['Info'][0].get('vdom', data['Info'][0].get('vkorp', 'N/A'))
-        vpom = data['Info'][0].get('vpom', 'N/A')
+        post_index = data['Info'][0].get('nindex', '')
+        city = data['Info'][0].get('vnp', '')
+        vulitsa = data['Info'][0].get('vulitsa', '')
+        vdom = data['Info'][0].get('vdom', data['Info'][0].get('vkorp', ''))
+        vpom = data['Info'][0].get('vpom', '')
         full_address = f'''г.{city}, ул. {vulitsa} {vdom} {
-            vpom}''' if city and vulitsa and vdom and vpom else 'N/A'
+            vpom}''' if city and vulitsa and vdom and vpom else ''
 
         return {
             'name': name_info,
@@ -205,7 +207,7 @@ def generate_numbers(start, end):
 def main():
     try:
         create_table()
-        for number in generate_numbers(100000313, 999999999):
+        for number in generate_numbers(100000127, 999999999):
             combined_data = {}
             name = get_name_company(number)
             if name is None:
