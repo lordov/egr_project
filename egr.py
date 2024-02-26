@@ -1,103 +1,70 @@
-import requests
-import urllib3
+import aiohttp
+import asyncio
+import aiosqlite
 import sqlite3
 import logging
-import time
-from urllib3.exceptions import InsecureRequestWarning
+from tqdm import tqdm
 
 
-# Отключение предупреждений об отсутствии сертификата
-urllib3.disable_warnings(InsecureRequestWarning)
+# Установите желаемое количество одновременных запросов
+MAX_CONCURRENT_REQUESTS = 1000
+# Через сколько запросов делать паузу
+REQUESTS_PAUSE_INTERVAL = 1000
+# Длительность паузы в секундах
+PAUSE_DURATION = 0
 
 # Настройка логгирования
 logging.basicConfig(filename='egr_data.log', level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+                    format='%(asctime)s %(levelname)s %(module)s %(message)s %(lineno)d')
 
 
-def get_egr_info(unp):
-    """
-    Выполняет запрос к API и возвращает данные в формате JSON.
+async def async_get_data(session: aiohttp.ClientSession, url_template: str, unp):
+    MAX_RETRIES = 3  # Максимальное количество попыток
+    RETRY_DELAY = 5  # Задержка между попытками в секундах
 
-    Args:
-        unp (str): Уникальный номер плательщика (УНП).
+    for attempt in range(MAX_RETRIES):
+        try:
+            async with session.get(url_template.format(unp), verify_ssl=False) as response:
+                if response.status == 429:
+                    logging.warning(
+                        f"Too many requests for UNP {unp}. Waiting before retrying.")
+                    await asyncio.sleep(5)
+                    continue
+                if response.status == 204:
+                    return None
+                response.raise_for_status()
+                json_data = await response.json()
+                return json_data
+        except (aiohttp.ClientResponseError, aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, aiohttp.ClientOSError) as e:
+            logging.error(f"Error getting data for UNP {unp}: {e}")
 
-    Returns:
-        dict: Данные в формате JSON или пустой словарь в случае ошибки.
-    """
-    try:
-        response = requests.get(
-            f'https://egr.gov.by/api/v2/egr/getAddressByRegNum/{unp}', verify=False)
-        if response.status_code == 429:  # Обработка ошибки "слишком много запросов"
-            logging.warning(f"""Too many requests for UNP {
-                            unp}. Waiting before retrying.""")
-            time.sleep(60)  # Подождать одну минуту перед повторным запросом
-            return get_egr_info(unp)  # Повторить запрос
-        if response.status_code == 204:
-            return None
-        response.raise_for_status()  # Проверка на успешный запрос
-        json_data = response.json()
-        return json_data
-    except Exception as e:
-        logging.error(f"Error getting EGR info for UNP {unp}: {e}")
-        return {}
+            if isinstance(e, (aiohttp.ServerDisconnectedError, aiohttp.ClientOSError)):
+                logging.warning("Connection error. Reconnecting...")
+                await asyncio.sleep(RETRY_DELAY)
+                continue
 
+        logging.warning(
+            f"Retrying ({attempt + 1}/{MAX_RETRIES}) for UNP {unp}...")
+        await asyncio.sleep(RETRY_DELAY)
 
-def get_name_company(unp):
-    """
-    Выполняет запрос к API и возвращает данные в формате JSON.
-
-    Args:
-        unp (str): Уникальный номер плательщика (УНП).
-
-    Returns:
-        dict: Данные в формате JSON или пустой словарь в случае ошибки.
-    """
-    try:
-        response = requests.get(
-            f'https://egr.gov.by/api/v2/egr/getJurNamesByRegNum/{unp}', verify=False)
-        if response.status_code == 429:  # Обработка ошибки "слишком много запросов"
-            logging.warning(f"""Too many requests for UNP {
-                            unp}. Waiting before retrying.""")
-            time.sleep(60)  # Подождать одну минуту перед повторным запросом
-            return get_name_company(unp)  # Повторить запрос
-        elif response.status_code == 204:
-            return None
-        elif response.status_code in {500, 501, 502, 503, 504}:
-            logging.error(f"Server problems for {unp}: {e} ")
-        response.raise_for_status()
-        json_data = response.json()
-        return json_data
-    except Exception as e:
-        logging.error(f"Error getting company name for UNP {unp}: {e}")
-        return {}
+    logging.error(
+        f"Failed to get data for UNP {unp} after {MAX_RETRIES} attempts.")
+    return {}
 
 
-def get_activity_company(unp):
-    """
-    Выполняет запрос к API и возвращает данные в формате JSON.
+async def async_get_name_company(session: aiohttp.ClientSession, unp: str):
+    url_template = 'https://egr.gov.by/api/v2/egr/getJurNamesByRegNum/{}'
+    return await async_get_data(session, url_template, unp)
 
-    Args:
-        unp (str): Уникальный номер плательщика (УНП).
 
-    Returns:
-        dict: Данные в формате JSON или пустой словарь в случае ошибки.
-    """
-    try:
-        response = requests.get(
-            f'https://egr.gov.by/api/v2/egr/getVEDByRegNum/{unp}', verify=False)
-        if response.status_code == 429:  # Обработка ошибки "слишком много запросов"
-            logging.warning(f"""Too many requests for UNP {
-                            unp}. Waiting before retrying.""")
-            time.sleep(60)  # Подождать одну минуту перед повторным запросом
-            return get_activity_company(unp)  # Повторить запрос
-        if response.status_code == 204:
-            return None
-        response.raise_for_status()
-        json_data = response.json()
-        return json_data
-    except Exception as e:
-        logging.error(f"Error getting company activity for UNP {unp}: {e}")
-        return {}
+async def async_get_activity_company(session: aiohttp.ClientSession, unp: str):
+    url_template = 'https://egr.gov.by/api/v2/egr/getVEDByRegNum/{}'
+    return await async_get_data(session, url_template, unp)
+
+
+async def async_get_egr_info(session: aiohttp.ClientSession, unp: str):
+    url_template = 'https://egr.gov.by/api/v2/egr/getAddressByRegNum/{}'
+    return await async_get_data(session, url_template, unp)
 
 
 def create_table():
@@ -116,8 +83,7 @@ def create_table():
                             PostIndex INT NULL,
                             Address VARCHAR(255),
                             Email VARCHAR(255) NULL,
-                            Telefon1 VARCHAR(255) NULL,
-                            Telefon2 VARCHAR(255) NULL
+                            Telefon VARCHAR(255) NULL
                         )''')
 
         conn.commit()
@@ -136,11 +102,7 @@ def format_data(data: dict):
 
         email = data['Info'][0].get('vemail', '')
 
-        phone_string = data['Info'][0].get('vtels', '')
-        phone_numbers = [number.strip() for number in phone_string.split(
-            ',')] if phone_string else ['', '']
-        telefon1 = phone_numbers[0] if phone_numbers else ''
-        telefon2 = phone_numbers[1] if len(phone_numbers) > 1 else ''
+        telefon = data['Info'][0].get('vtels', '')
 
         post_index = data['Info'][0].get('nindex', '')
         city = data['Info'][0].get('vnp', '')
@@ -148,15 +110,14 @@ def format_data(data: dict):
         vdom = data['Info'][0].get('vdom', data['Info'][0].get('vkorp', ''))
         vpom = data['Info'][0].get('vpom', '')
         full_address = f'''г.{city}, ул. {vulitsa} {vdom} {
-            vpom}''' if city and vulitsa and vdom and vpom else ''
+            vpom}'''
 
         return {
             'name': name_info,
             'unp': unp_info,
             'activity': activity_info,
             'email': email,
-            'telefon1': telefon1,
-            'telefon2': telefon2,
+            'telefon': telefon,
             'post_index': post_index,
             'full_address': full_address
         }
@@ -165,26 +126,21 @@ def format_data(data: dict):
         return {}
 
 
-def insert_data(data: dict):
-    """
-    Вставляет данные в таблицу egr_data базы данных my_database.db.
-
-    Args:
-        data (dict): Словарь с данными для вставки в таблицу.
-    """
+async def async_insert_data(data: dict):
     try:
         formatted_data = format_data(data)
-        conn = sqlite3.connect('my_database.db')
-        cursor = conn.cursor()
 
-        cursor.execute('''INSERT INTO egr_data (Name, UNP, Activity, Email, Telefon1, Telefon2, PostIndex, Address)
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                       (formatted_data['name'], formatted_data['unp'], formatted_data['activity'],
-                        formatted_data['email'], formatted_data['telefon1'], formatted_data['telefon2'],
-                        formatted_data['post_index'], formatted_data['full_address']))
+        # Используем контекстный менеджер для подключения к базе данных с aiosqlite
+        async with aiosqlite.connect('my_database.db') as conn:
+            cursor = await conn.cursor()
 
-        conn.commit()
-        conn.close()
+            await cursor.execute('''INSERT INTO egr_data (Name, UNP, Activity, Email, Telefon, PostIndex, Address)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                                 (formatted_data['name'], formatted_data['unp'], formatted_data['activity'],
+                                  formatted_data['email'], formatted_data['telefon'],
+                                  formatted_data['post_index'], formatted_data['full_address']))
+
+            await conn.commit()
     except Exception as e:
         logging.error(f"Error inserting data into database: {e}")
 
@@ -204,30 +160,61 @@ def generate_numbers(start, end):
         yield str(number).zfill(9)
 
 
-def main():
-    try:
-        create_table()
-        for number in generate_numbers(100000127, 999999999):
-            combined_data = {}
-            name = get_name_company(number)
-            if name is None:
-                logging.info(
-                    f'Failed to retrieve necessary data for UNP: {number}')
-                continue
-            activity = get_activity_company(number)
-            egr_info = get_egr_info(number)
+async def async_get_combined_data(session: aiohttp.ClientSession, sem: asyncio.Semaphore, unp):
+    async with sem:
+        combined_data = {}
+        name = await async_get_name_company(session, unp)
+        if name is None or name == {}:
+            logging.info(f'Failed to retrieve necessary data for UNP: {unp}')
+            return None
+        activity = await async_get_activity_company(session, unp)
+        egr_info = await async_get_egr_info(session, unp)
 
-            combined_data['Name'] = name
-            combined_data['Activity'] = activity
-            combined_data['Info'] = egr_info
+        combined_data['Name'] = name
+        combined_data['Activity'] = activity
+        combined_data['Info'] = egr_info
 
-            insert_data(combined_data)
+        return combined_data
 
-    except Exception as e:
-        logging.error(f'An unexpected error occurred: {e}')
 
+async def main_async():
+    create_table()
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        total_numbers = 999999999 - 100000127 + 1  # Общее количество чисел
+        progress_bar = tqdm(total=total_numbers,
+                            desc="Processing Numbers", unit="number")
+
+        for index, number in enumerate(generate_numbers(100000127, 999999999), start=1):
+            tasks.append(async_get_combined_data(session, sem, number))
+            if index % REQUESTS_PAUSE_INTERVAL == 0:
+                results = await asyncio.gather(*tasks)
+                tasks = []
+                progress_bar.update(index - progress_bar.n)
+                logging.info(f'Pause for {PAUSE_DURATION} seconds...')
+                await asyncio.sleep(PAUSE_DURATION)
+
+                # Вставка данных в базу данных после каждой паузы
+                if results and any(result for result in results):
+                    for result in results:
+                        if result:
+                            await async_insert_data(result)
+
+        if tasks:
+            results = await asyncio.gather(*tasks)
+
+            # Вставка данных в базу данных после последней паузы
+            if results and any(result for result in results):
+                for result in results:
+                    if result:
+                        await async_insert_data(result)
+
+        progress_bar.close()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main_async())
 else:
     print('MAGICHAL SCUF')
