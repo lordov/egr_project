@@ -5,6 +5,7 @@ import logging
 import time
 from urllib3.exceptions import InsecureRequestWarning
 
+
 # Отключение предупреждений об отсутствии сертификата
 urllib3.disable_warnings(InsecureRequestWarning)
 
