@@ -7,15 +7,15 @@ from tqdm import tqdm
 
 
 # Установите желаемое количество одновременных запросов
-MAX_CONCURRENT_REQUESTS = 1000
+MAX_CONCURRENT_REQUESTS = 5000
 # Через сколько запросов делать паузу
-REQUESTS_PAUSE_INTERVAL = 1000
+REQUESTS_PAUSE_INTERVAL = 5000
 # Длительность паузы в секундах
 PAUSE_DURATION = 0
 
 # Настройка логгирования
 logging.basicConfig(filename='egr_data.log', level=logging.INFO,
-                    format='%(asctime)s %(levelname)s %(module)s %(message)s %(lineno)d')
+                    format='%(asctime)s %(levelname)s %(module)s %(message)s %(lineno)d', encoding='utf-8')
 
 
 async def async_get_data(session: aiohttp.ClientSession, url_template: str, unp):
@@ -64,6 +64,11 @@ async def async_get_activity_company(session: aiohttp.ClientSession, unp: str):
 
 async def async_get_egr_info(session: aiohttp.ClientSession, unp: str):
     url_template = 'https://egr.gov.by/api/v2/egr/getAddressByRegNum/{}'
+    return await async_get_data(session, url_template, unp)
+
+
+async def get_based_info(session: aiohttp.ClientSession, unp: str):
+    url_template = 'https://egr.gov.by/api/v2/egr/getBaseInfoByRegNum/{}'
     return await async_get_data(session, url_template, unp)
 
 
@@ -163,18 +168,23 @@ def generate_numbers(start, end):
 async def async_get_combined_data(session: aiohttp.ClientSession, sem: asyncio.Semaphore, unp):
     async with sem:
         combined_data = {}
-        name = await async_get_name_company(session, unp)
-        if name is None or name == {}:
-            logging.info(f'Failed to retrieve necessary data for UNP: {unp}')
-            return None
-        activity = await async_get_activity_company(session, unp)
-        egr_info = await async_get_egr_info(session, unp)
+        basedinfo = await get_based_info(session, unp)
+        if basedinfo is not None:
+            status = basedinfo[0].get('nsi00219').get('vnsostk')
+            if status == 'Действующий':
+                name = await async_get_name_company(session, unp)
+                if name is None or name == {}:
+                    return None
+                activity = await async_get_activity_company(session, unp)
+                egr_info = await async_get_egr_info(session, unp)
 
-        combined_data['Name'] = name
-        combined_data['Activity'] = activity
-        combined_data['Info'] = egr_info
+                combined_data['Name'] = name
+                combined_data['Activity'] = activity
+                combined_data['Info'] = egr_info
 
-        return combined_data
+                return combined_data
+            else:
+                logging.info(f'{unp}: is {status}')
 
 
 async def main_async():
@@ -194,7 +204,6 @@ async def main_async():
                 results = await asyncio.gather(*tasks)
                 tasks = []
                 progress_bar.update(index - progress_bar.n)
-                logging.info(f'Pause for {PAUSE_DURATION} seconds...')
                 await asyncio.sleep(PAUSE_DURATION)
 
                 # Вставка данных в базу данных после каждой паузы
